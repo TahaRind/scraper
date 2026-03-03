@@ -62,3 +62,23 @@ def test_proshop_handler_parses_json_ld_from_graph_list() -> None:
 
     assert handler._get_product_name() == "Roborock Qrevo S White"
     assert handler._get_product_currency() == "DKK"
+
+
+def test_proshop_handler_price_falls_back_to_json_ld_offer_price() -> None:
+    html = """
+    <html>
+      <head>
+        <script type="application/ld+json">
+            {"@type":"Product","name":"Roborock Qrevo S White","offers":{"price":"3999.50","priceCurrency":"DKK"}}
+        </script>
+      </head>
+      <body></body>
+    </html>
+    """
+
+    handler = ProshopHandler("https://www.proshop.dk/Robotstoevsuger/Roborock-Robotstoevsuger-Qrevo-S-White/3353131")
+    handler.request_data = BeautifulSoup(html, "html.parser")
+
+    handler._get_common_data()
+
+    assert handler._get_product_price() == 3999.5

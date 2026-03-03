@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import pytest
 
-from scraper.domains import get_website_name, get_number_string
+from scraper.domains import get_website_name, get_number_string, parse_price_string
 
 
 @dataclass
@@ -61,5 +61,21 @@ test_price_values = [
 @pytest.mark.parametrize("value,expected", test_price_values)
 def test_get_number_string(value: str, expected: str) -> None:
     result = get_number_string(value)
+
+    assert result == expected
+
+
+test_price_parse_values = [
+    ("3.999,95 kr", 3999.95),
+    ("$3,999.95", 3999.95),
+    ("3999.95", 3999.95),
+    ("3999,95", 3999.95),
+    ("399995", 399995.0),
+]
+
+
+@pytest.mark.parametrize("value,expected", test_price_parse_values)
+def test_parse_price_string(value: str, expected: float) -> None:
+    result = parse_price_string(value)
 
     assert result == expected
