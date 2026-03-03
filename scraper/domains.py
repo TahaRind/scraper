@@ -101,42 +101,75 @@ class KomplettHandler(BaseWebsiteHandler):
 
 class ProshopHandler(BaseWebsiteHandler):
     def _get_common_data(self) -> None:
-        soup_script_tag = self.request_data.find("script", type="application/ld+json").contents[0]
-        self.script_json = json.loads(soup_script_tag)
+        self.script_json = {}
+
+        script_tags = self.request_data.find_all("script", type="application/ld+json")
+
+        for script_tag in script_tags:
+            contents = script_tag.string or "".join(script_tag.contents)
+            if not contents:
+                continue
+
+            try:
+                script_json = json.loads(contents)
+            except json.JSONDecodeError:
+                continue
+
+            if not isinstance(script_json, dict):
+                continue
+
+            # Use data that looks like a product schema.
+            if any(("name" in script_json, "offers" in script_json)):
+                self.script_json = script_json
+                break
+
+        # Fallback values when product schema JSON isn't present.
+        if not self.script_json:
+            title_tag = self.request_data.find("meta", property="og:title")
+            if title_tag and title_tag.get("content"):
+                self.script_json["name"] = title_tag.get("content")
+
+            currency_tag = self.request_data.find("meta", property="product:price:currency")
+            if currency_tag and currency_tag.get("content"):
+                self.script_json["offers"] = {"priceCurrency": currency_tag.get("content")}
 
     def _get_product_name(self) -> str:
-        return self.script_json["name"]
+        if self.script_json.get("name"):
+            return self.script_json["name"]
+
+        return self.request_data.find("meta", property="og:title").get("content")
 
     def _get_product_price(self) -> float:
-        try:
-            # find normal price
-            price = float(
-                self.request_data.find("span", class_="site-currency-attention")
-                .text.replace(".", "")
-                .replace(",", ".")
-                .strip(" kr")
-            )
-        except AttributeError:
+        price_selectors = [
+            ("span", {"class": "site-currency-attention"}),
+            ("div", {"class": "site-currency-attention site-currency-campaign"}),
+            ("div", {"class": "site-currency-attention"}),
+        ]
+
+        for tag_name, tag_attrs in price_selectors:
+            tag = self.request_data.find(tag_name, tag_attrs)
+
+            if not tag or not tag.text:
+                continue
+
             try:
-                # find discount price
-                price = float(
-                    self.request_data.find("div", class_="site-currency-attention site-currency-campaign")
-                    .text.replace(".", "")
-                    .replace(",", ".")
-                    .strip(" kr")
-                )
-            except AttributeError:
-                # if campaign is sold out (udsolgt)
-                price = float(
-                    self.request_data.find("div", class_="site-currency-attention")
-                    .text.replace(".", "")
-                    .replace(",", ".")
-                    .strip(" kr")
-                )
-        return price
+                return float(tag.text.replace(".", "").replace(",", ".").strip(" kr"))
+            except ValueError:
+                continue
+
+        price_meta_tag = self.request_data.find("meta", property="product:price:amount")
+
+        if price_meta_tag and price_meta_tag.get("content"):
+            return float(price_meta_tag.get("content"))
+
+        raise AttributeError("Could not find product price for Proshop page")
 
     def _get_product_currency(self) -> str:
-        currency = self.script_json.get("offers").get("priceCurrency")
+        currency = self.script_json.get("offers", {}).get("priceCurrency")
+
+        if not currency:
+            currency = self.request_data.find("meta", property="product:price:currency").get("content")
+
         return currency
 
     def _get_product_id(self) -> str:
