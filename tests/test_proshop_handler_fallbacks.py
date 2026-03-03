@@ -82,3 +82,23 @@ def test_proshop_handler_price_falls_back_to_json_ld_offer_price() -> None:
     handler._get_common_data()
 
     assert handler._get_product_price() == 3999.5
+
+
+def test_proshop_handler_price_falls_back_to_price_value_in_html_json() -> None:
+    html = """
+    <html>
+      <head>
+        <script>
+          window.__INITIAL_STATE__ = {"product": {"price": "4299,95"}};
+        </script>
+      </head>
+      <body></body>
+    </html>
+    """
+
+    handler = ProshopHandler("https://www.proshop.dk/Robotstoevsuger/Roborock-Robotstoevsuger-Qrevo-S-White/3353131")
+    handler.request_data = BeautifulSoup(html, "html.parser")
+
+    handler._get_common_data()
+
+    assert handler._get_product_price() == 4299.95

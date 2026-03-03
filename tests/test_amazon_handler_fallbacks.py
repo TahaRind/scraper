@@ -43,3 +43,21 @@ def test_amazon_handler_falls_back_to_meta_price_and_url_asin() -> None:
     assert handler._get_product_name() == "Some Product Title"
     assert handler._get_product_price() == 129.5
     assert handler._get_product_id() == "B012345678"
+
+
+def test_amazon_handler_price_falls_back_to_embedded_price_to_pay_amount() -> None:
+    html = """
+    <html>
+      <head></head>
+      <body>
+        <script>
+          var data = {"priceToPay": {"amount": 78.49, "currencyCode": "USD"}};
+        </script>
+      </body>
+    </html>
+    """
+
+    handler = AmazonHandler("https://www.amazon.com/Magsafe/dp/B0DT6ZBDYS")
+    handler.request_data = BeautifulSoup(html, "html.parser")
+
+    assert handler._get_product_price() == 78.49

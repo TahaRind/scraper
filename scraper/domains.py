@@ -202,6 +202,18 @@ class ProshopHandler(BaseWebsiteHandler):
         if price_meta_tag and price_meta_tag.get("content"):
             return parse_price_string(price_meta_tag.get("content"))
 
+        html_price = find_first_price_in_text(
+            str(self.request_data),
+            [
+                r'"price"\s*:\s*"?(\d+[\d.,]*)"?',
+                r'"salePrice"\s*:\s*"?(\d+[\d.,]*)"?',
+                r'data-price\s*=\s*"(\d+[\d.,]*)"',
+            ],
+        )
+
+        if html_price is not None:
+            return html_price
+
         raise AttributeError("Could not find product price for Proshop page")
 
     def _get_product_currency(self) -> str:
@@ -375,6 +387,18 @@ class AmazonHandler(BaseWebsiteHandler):
                 return parse_price_string(number_string)
             except ValueError:
                 continue
+
+        html_price = find_first_price_in_text(
+            str(self.request_data),
+            [
+                r'"priceToPay"\s*:\s*\{[^}]*"amount"\s*:\s*([\d.]+)',
+                r'"price"\s*:\s*"?(\d+[\d.,]*)"?',
+                r'"displayPrice"\s*:\s*"[^\d]*(\d+[\d.,]*)',
+            ],
+        )
+
+        if html_price is not None:
+            return html_price
 
         raise AttributeError("Could not find product price for Amazon page")
 
@@ -727,6 +751,23 @@ def parse_price_string(value: str) -> float:
         normalized = number_string
 
     return float(normalized)
+
+
+def find_first_price_in_text(text: str, regex_patterns: list[str]) -> float | None:
+    for regex_pattern in regex_patterns:
+        regex_result = re.search(regex_pattern, text)
+
+        if not regex_result:
+            continue
+
+        price_string = regex_result.group(1)
+
+        try:
+            return parse_price_string(price_string)
+        except ValueError:
+            continue
+
+    return None
 
 
 SUPPORTED_DOMAINS: dict[str, BaseWebsiteHandler] = {
