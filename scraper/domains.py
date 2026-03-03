@@ -101,43 +101,132 @@ class KomplettHandler(BaseWebsiteHandler):
 
 class ProshopHandler(BaseWebsiteHandler):
     def _get_common_data(self) -> None:
-        soup_script_tag = self.request_data.find("script", type="application/ld+json").contents[0]
-        self.script_json = json.loads(soup_script_tag)
+        self.script_json = {}
+
+        script_tags = self.request_data.find_all("script", type="application/ld+json")
+
+        for script_tag in script_tags:
+            contents = script_tag.string or "".join(script_tag.contents)
+            if not contents:
+                continue
+
+            try:
+                script_json = json.loads(contents)
+            except json.JSONDecodeError:
+                continue
+
+            script_candidates = []
+
+            if isinstance(script_json, dict):
+                script_candidates.append(script_json)
+
+                graph = script_json.get("@graph")
+                if isinstance(graph, list):
+                    script_candidates.extend(elem for elem in graph if isinstance(elem, dict))
+
+            if isinstance(script_json, list):
+                script_candidates.extend(elem for elem in script_json if isinstance(elem, dict))
+
+            for candidate in script_candidates:
+                # Use data that looks like a product schema.
+                if any(("name" in candidate, "offers" in candidate)):
+                    self.script_json = candidate
+                    break
+
+            if self.script_json:
+                break
+
+        # Fallback values when product schema JSON isn't present.
+        if not self.script_json:
+            title_tag = self.request_data.find("meta", property="og:title")
+            if title_tag and title_tag.get("content"):
+                self.script_json["name"] = title_tag.get("content")
+
+            currency_tag = self.request_data.find("meta", property="product:price:currency")
+            if currency_tag and currency_tag.get("content"):
+                self.script_json["offers"] = {"priceCurrency": currency_tag.get("content")}
 
     def _get_product_name(self) -> str:
-        return self.script_json["name"]
+        if self.script_json.get("name"):
+            return self.script_json["name"]
+
+        og_title_tag = self.request_data.find("meta", property="og:title")
+        if og_title_tag and og_title_tag.get("content"):
+            return og_title_tag.get("content")
+
+        title_tag = self.request_data.find("title")
+        if title_tag and title_tag.text:
+            return title_tag.text.strip()
+
+        product_title_tag = self.request_data.find("h1")
+        if product_title_tag and product_title_tag.text:
+            return product_title_tag.text.strip()
+
+        # Final fallback: infer a readable name from URL slug.
+        slug = self.url.rstrip("/").split("/")[-2] if len(self.url.rstrip("/").split("/")) > 1 else self.url
+        return slug.replace("-", " ")
 
     def _get_product_price(self) -> float:
-        try:
-            # find normal price
-            price = float(
-                self.request_data.find("span", class_="site-currency-attention")
-                .text.replace(".", "")
-                .replace(",", ".")
-                .strip(" kr")
-            )
-        except AttributeError:
+        price_selectors = [
+            ("span", {"class": "site-currency-attention"}),
+            ("div", {"class": "site-currency-attention site-currency-campaign"}),
+            ("div", {"class": "site-currency-attention"}),
+            ("meta", {"itemprop": "price"}),
+        ]
+
+        for tag_name, tag_attrs in price_selectors:
+            tag = self.request_data.find(tag_name, tag_attrs)
+
+            if not tag:
+                continue
+
+            raw_price = tag.get("content") if tag_name == "meta" else tag.text
+
+            if not raw_price:
+                continue
+
             try:
-                # find discount price
-                price = float(
-                    self.request_data.find("div", class_="site-currency-attention site-currency-campaign")
-                    .text.replace(".", "")
-                    .replace(",", ".")
-                    .strip(" kr")
-                )
-            except AttributeError:
-                # if campaign is sold out (udsolgt)
-                price = float(
-                    self.request_data.find("div", class_="site-currency-attention")
-                    .text.replace(".", "")
-                    .replace(",", ".")
-                    .strip(" kr")
-                )
-        return price
+                return parse_price_string(raw_price)
+            except ValueError:
+                continue
+
+        script_price = self.script_json.get("offers", {}).get("price")
+        if script_price is not None:
+            try:
+                return parse_price_string(str(script_price))
+            except ValueError:
+                pass
+
+        price_meta_tag = self.request_data.find("meta", property="product:price:amount")
+
+        if price_meta_tag and price_meta_tag.get("content"):
+            return parse_price_string(price_meta_tag.get("content"))
+
+        html_price = find_first_price_in_text(
+            str(self.request_data),
+            [
+                r'"price"\s*:\s*"?(\d+[\d.,]*)"?',
+                r'"salePrice"\s*:\s*"?(\d+[\d.,]*)"?',
+                r'data-price\s*=\s*"(\d+[\d.,]*)"',
+            ],
+        )
+
+        if html_price is not None:
+            return html_price
+
+        raise AttributeError("Could not find product price for Proshop page")
 
     def _get_product_currency(self) -> str:
-        currency = self.script_json.get("offers").get("priceCurrency")
-        return currency
+        currency = self.script_json.get("offers", {}).get("priceCurrency")
+
+        if currency:
+            return currency
+
+        currency_tag = self.request_data.find("meta", property="product:price:currency")
+        if currency_tag and currency_tag.get("content"):
+            return currency_tag.get("content")
+
+        return "N/F"
 
     def _get_product_id(self) -> str:
         return self.url.split("/")[-1]
@@ -251,27 +340,101 @@ class AvCablesHandler(BaseWebsiteHandler):
 
 class AmazonHandler(BaseWebsiteHandler):
     def _get_product_name(self) -> str:
-        return self.request_data.find("span", id="productTitle").text.strip()
+        product_title = self.request_data.find("span", id="productTitle")
+        if product_title and product_title.text:
+            return product_title.text.strip()
+
+        og_title_tag = self.request_data.find("meta", property="og:title")
+        if og_title_tag and og_title_tag.get("content"):
+            return og_title_tag.get("content")
+
+        title_tag = self.request_data.find("title")
+        if title_tag and title_tag.text:
+            return title_tag.text.strip()
+
+        asin = self._get_product_id()
+        return f"Amazon product {asin}"
 
     def _get_product_price(self) -> float:
-        raw_price = self.request_data.find("span", class_="a-price").span.text.replace(",", "").replace(" ", "")
-        return float(get_number_string(raw_price))
+        price_selectors = [
+            ("span", {"class": "a-price aok-align-center"}),
+            ("span", {"class": "a-price"}),
+            ("span", {"class": "a-offscreen"}),
+            ("span", {"id": "priceblock_ourprice"}),
+            ("span", {"id": "priceblock_dealprice"}),
+            ("meta", {"property": "og:price:amount"}),
+        ]
+
+        for tag_name, attrs in price_selectors:
+            tag = self.request_data.find(tag_name, attrs)
+
+            if not tag:
+                continue
+
+            raw_price = tag.get("content") if tag_name == "meta" else tag.text
+
+            if tag_name == "span" and hasattr(tag, "span") and tag.span and tag.span.text:
+                raw_price = tag.span.text
+
+            if not raw_price:
+                continue
+
+            number_string = get_number_string(raw_price.replace(" ", ""))
+            if not number_string:
+                continue
+
+            try:
+                return parse_price_string(number_string)
+            except ValueError:
+                continue
+
+        html_price = find_first_price_in_text(
+            str(self.request_data),
+            [
+                r'"priceToPay"\s*:\s*\{[^}]*"amount"\s*:\s*([\d.]+)',
+                r'"price"\s*:\s*"?(\d+[\d.,]*)"?',
+                r'"displayPrice"\s*:\s*"[^\d]*(\d+[\d.,]*)',
+            ],
+        )
+
+        if html_price is not None:
+            return html_price
+
+        raise AttributeError("Could not find product price for Amazon page")
 
     def _get_product_currency(self) -> str:
+        currency_meta_tag = self.request_data.find("meta", property="og:price:currency")
+        if currency_meta_tag and currency_meta_tag.get("content"):
+            return currency_meta_tag.get("content")
+
         regex_pattern = "%22currencyCode%22%3A%22(.{3})%22"
 
         regex_result = re.search(regex_pattern, str(self.request_data))
 
         if regex_result:
             return regex_result.group(1)
+
+        if "$" in str(self.request_data):
+            return "USD"
+
         return "N/F"
 
     def _get_product_id(self) -> str:
         try:
             return self.request_data.find("input", id="ASIN").get("value")
         except (AttributeError, ValueError, TypeError):
-            asin_json = json.loads(self.request_data.find("span", id="cr-state-object").get("data-state"))
-            return asin_json["asin"]
+            cr_state_object_tag = self.request_data.find("span", id="cr-state-object")
+
+            if cr_state_object_tag and cr_state_object_tag.get("data-state"):
+                asin_json = json.loads(cr_state_object_tag.get("data-state"))
+                return asin_json["asin"]
+
+            asin_match = re.search(r"/dp/([A-Z0-9]{10})", self.url)
+
+            if asin_match:
+                return asin_match.group(1)
+
+            raise AttributeError("Could not find ASIN for Amazon page")
 
     def get_short_url(self) -> str:
         return self.url
@@ -552,6 +715,59 @@ def get_number_string(value: str) -> str:
     text_pattern = re.compile(r"[^\d.,]+")
     result = text_pattern.sub("", value)
     return result
+
+
+def parse_price_string(value: str) -> float:
+    """Parse localized price text to float.
+
+    Handles common thousands/decimal separator variants such as:
+    - 3.999,95
+    - 3,999.95
+    - 3999.95
+    - 3999,95
+    - 3 999,95
+    """
+    number_string = get_number_string(value)
+
+    if not number_string:
+        raise ValueError("Price string contains no digits")
+
+    has_comma = "," in number_string
+    has_dot = "." in number_string
+
+    if has_comma and has_dot:
+        # Treat the right-most separator as decimal separator.
+        if number_string.rfind(",") > number_string.rfind("."):
+            normalized = number_string.replace(".", "").replace(",", ".")
+        else:
+            normalized = number_string.replace(",", "")
+    elif has_comma:
+        whole, fractional = number_string.rsplit(",", 1)
+        normalized = f"{whole.replace(',', '')}.{fractional}" if len(fractional) <= 2 else number_string.replace(",", "")
+    elif has_dot:
+        whole, fractional = number_string.rsplit(".", 1)
+        normalized = f"{whole.replace('.', '')}.{fractional}" if len(fractional) <= 2 else number_string.replace(".", "")
+    else:
+        normalized = number_string
+
+    return float(normalized)
+
+
+def find_first_price_in_text(text: str, regex_patterns: list[str]) -> float | None:
+    for regex_pattern in regex_patterns:
+        regex_result = re.search(regex_pattern, text)
+
+        if not regex_result:
+            continue
+
+        price_string = regex_result.group(1)
+
+        try:
+            return parse_price_string(price_string)
+        except ValueError:
+            continue
+
+    return None
 
 
 SUPPORTED_DOMAINS: dict[str, BaseWebsiteHandler] = {
