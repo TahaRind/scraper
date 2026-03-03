@@ -115,12 +115,25 @@ class ProshopHandler(BaseWebsiteHandler):
             except json.JSONDecodeError:
                 continue
 
-            if not isinstance(script_json, dict):
-                continue
+            script_candidates = []
 
-            # Use data that looks like a product schema.
-            if any(("name" in script_json, "offers" in script_json)):
-                self.script_json = script_json
+            if isinstance(script_json, dict):
+                script_candidates.append(script_json)
+
+                graph = script_json.get("@graph")
+                if isinstance(graph, list):
+                    script_candidates.extend(elem for elem in graph if isinstance(elem, dict))
+
+            if isinstance(script_json, list):
+                script_candidates.extend(elem for elem in script_json if isinstance(elem, dict))
+
+            for candidate in script_candidates:
+                # Use data that looks like a product schema.
+                if any(("name" in candidate, "offers" in candidate)):
+                    self.script_json = candidate
+                    break
+
+            if self.script_json:
                 break
 
         # Fallback values when product schema JSON isn't present.
@@ -137,7 +150,21 @@ class ProshopHandler(BaseWebsiteHandler):
         if self.script_json.get("name"):
             return self.script_json["name"]
 
-        return self.request_data.find("meta", property="og:title").get("content")
+        og_title_tag = self.request_data.find("meta", property="og:title")
+        if og_title_tag and og_title_tag.get("content"):
+            return og_title_tag.get("content")
+
+        title_tag = self.request_data.find("title")
+        if title_tag and title_tag.text:
+            return title_tag.text.strip()
+
+        product_title_tag = self.request_data.find("h1")
+        if product_title_tag and product_title_tag.text:
+            return product_title_tag.text.strip()
+
+        # Final fallback: infer a readable name from URL slug.
+        slug = self.url.rstrip("/").split("/")[-2] if len(self.url.rstrip("/").split("/")) > 1 else self.url
+        return slug.replace("-", " ")
 
     def _get_product_price(self) -> float:
         price_selectors = [
@@ -167,10 +194,14 @@ class ProshopHandler(BaseWebsiteHandler):
     def _get_product_currency(self) -> str:
         currency = self.script_json.get("offers", {}).get("priceCurrency")
 
-        if not currency:
-            currency = self.request_data.find("meta", property="product:price:currency").get("content")
+        if currency:
+            return currency
 
-        return currency
+        currency_tag = self.request_data.find("meta", property="product:price:currency")
+        if currency_tag and currency_tag.get("content"):
+            return currency_tag.get("content")
+
+        return "N/F"
 
     def _get_product_id(self) -> str:
         return self.url.split("/")[-1]
